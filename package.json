@@ -1,0 +1,30 @@
+{
+  "name": "shieldsigned-bot",
+  "version": "1.0.0",
+  "description": "Auto SSL Bot",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main",
+    "test": "node main"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mathieu2301/Shieldsigned-Bot.git"
+  },
+  "keywords": [
+    "SSL",
+    "Bot",
+    "Shieldsigned"
+  ],
+  "author": "Mathieu Colmon",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Mathieu2301/Shieldsigned-Bot/issues"
+  },
+  "homepage": "https://github.com/Mathieu2301/Shieldsigned-Bot#readme",
+  "devDependencies": {
+    "eslint": "^7.22.0",
+    "eslint-config-airbnb-base": "^14.2.1",
+    "eslint-plugin-import": "^2.22.1"
+  }
+}
