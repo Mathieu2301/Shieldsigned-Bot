@@ -7,11 +7,15 @@ const activeSession = {
 
 function request(infos = {}, payload = '') {
   return new Promise((cb, err) => {
-    const req = https.request(infos, (res) => {
+    const req = https.request({
+      method: 'GET',
+      hostname: 'www.shieldsigned.com',
+      ...infos,
+    }, (res) => {
       let data = '';
       res.on('data', (d) => { data += d; });
       res.on('close', () => {
-        const token = data.match(/"csrf-token" content=".*"/gm);
+        const token = data.match(/"csrf-token" content=".*"/g);
         const session = res.headers['set-cookie'];
 
         if (token) activeSession.token = token[0].replace(/"/g, '').split('=', 2).pop();
@@ -21,7 +25,11 @@ function request(infos = {}, payload = '') {
             .split(';')[0].split('=', 2).pop();
         }
 
-        cb({ data, status: res.statusCode });
+        cb({
+          status: res.statusCode,
+          location: res.headers.location,
+          data,
+        });
       });
     });
 
@@ -37,8 +45,6 @@ module.exports = {
   async login(username = '', password = '') {
     // Init session
     const sessRQ = await request({
-      method: 'GET',
-      hostname: 'www.shieldsigned.com',
       path: '/users/sign_in',
     });
 
@@ -50,7 +56,6 @@ module.exports = {
     // Login
     const loginRQ = await request({
       method: 'POST',
-      hostname: 'www.shieldsigned.com',
       path: '/users/sign_in',
       headers: {
         'content-type': 'multipart/form-data',
@@ -65,12 +70,35 @@ module.exports = {
     return this.getCerts();
   },
 
+  async getKeys(certId) {
+    if (!activeSession.session || !activeSession.token) throw new Error('Not logged');
+
+    const certsRQ = await request({
+      path: `/certificates/${certId}`,
+      headers: {
+        cookie: `_shield_signed_session=${activeSession.session}`,
+      },
+    });
+
+    if (certsRQ.status === 404) throw new Error('Certificate not found');
+
+    const status = certsRQ.data.match(/ed>.*?<\/bu/i)[0].split('>').pop().split('<');
+    const CSR = certsRQ.data.match(/-{5}BEGIN.*?REQUEST-(.|\n|\r)*?-END.*?REQUEST-{5}/i);
+    const privateKey = certsRQ.data.match(/-{5}BEGIN.*?KEY-(.|\n|\r)*?-END.*?KEY-{5}/i);
+    const publicKey = certsRQ.data.match(/-{5}BEGIN CERTIFICATE-(.|\n|\r)*?-END CERTIFICATE-{5}/gi);
+
+    return {
+      status: status ? status[0] : 'Unknown',
+      CSR: CSR ? CSR[0] : null,
+      publicKey: publicKey ? `${publicKey[0]}\n\n${publicKey[1]}` : null,
+      privateKey: privateKey ? privateKey[0] : null,
+    };
+  },
+
   async getCerts() {
     if (!activeSession.session || !activeSession.token) throw new Error('Not logged');
 
     const certsRQ = await request({
-      method: 'GET',
-      hostname: 'www.shieldsigned.com',
       path: '/certificates',
       headers: {
         cookie: `_shield_signed_session=${activeSession.session}`,
@@ -80,15 +108,19 @@ module.exports = {
     const table = certsRQ.data.split('<tbody>')[1];
     if (!table) return [];
 
+    const { getKeys, createCert, deleteCert } = this;
+
     return certsRQ.data.split('<tbody>')[1].replace(/(\t| {2,})/g, '').match(/<tr>(\n|\r|.)+?<\/tr>/g).map((c) => {
       const lines = c.split('\n').map((l) => l.replace(/<.*?>|<\/.*?>/g, ''));
+      const item = c.match(/<a href="\/certificates\/[0-9]*?">View</g);
+      if (!item) return null;
 
-      const id = c.match(/<a href="\/certificates\/[0-9]*?">View</g)[0].split('/').pop().split('"')[0];
+      const id = item[0].split('/').pop().split('"')[0];
       const creation = new Date(lines[4]);
       const expiration = new Date((new Date(lines[4])).setMonth(creation.getMonth() + 3));
       const daysLeft = Math.floor((expiration.getTime() - Date.now()) / 86400000);
 
-      const { deleteCert } = this;
+      let keys = null;
 
       return {
         id,
@@ -97,11 +129,45 @@ module.exports = {
         creation,
         expiration,
         daysLeft: daysLeft > 0 ? daysLeft : 0,
+        async getKeys() {
+          if (!keys) keys = await getKeys(id);
+          return keys;
+        },
+        async renew(options = {
+          organizationName: '',
+          organizationalUnit: '',
+          country: '',
+        }, cb = (crt) => crt, log = (state) => state) {
+          if (!keys) keys = await this.getKeys();
+          const certId = await createCert({
+            CSR: keys.CSR,
+            ...options,
+            type: 'DNS',
+          });
+
+          let lastStatus = '';
+          const interval = setInterval(async () => {
+            try {
+              const crt = await getKeys(certId);
+              if (lastStatus !== crt.status) {
+                lastStatus = crt.status;
+                log(crt.status);
+                if (crt.status === 'Complete') {
+                  cb(crt);
+                  clearInterval(interval);
+                }
+              }
+            } catch (error) {
+              clearInterval(interval);
+              throw error;
+            }
+          }, 5000);
+        },
         async delete() {
           return deleteCert(id);
         },
       };
-    });
+    }).filter((c) => c);
   },
 
   async deleteCert(certId = '') {
@@ -109,7 +175,6 @@ module.exports = {
 
     const delRQ = await request({
       method: 'POST',
-      hostname: 'www.shieldsigned.com',
       path: `/certificates/${certId}`,
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
@@ -136,7 +201,6 @@ module.exports = {
 
     const createRQ = await request({
       method: 'POST',
-      hostname: 'www.shieldsigned.com',
       path: '/certificates/',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
@@ -144,13 +208,13 @@ module.exports = {
       },
     }, `authenticity_token=${activeSession.token.replace(/\+/g, '%2B').replace(/\//g, '%2F')
     }==&certificate%5Bidentifiers%5D=${options.domain || ''
-    }&certificate%5Bcsr%5D=${options.CSR || ''
+    }&certificate%5Bcsr%5D=${options.CSR ? options.CSR.replace(/\+/g, '%2B').replace(/\//g, '%2F').replace(/ /g, '+').replace(/\r\n/g, '%0D%0A') : ''
     }&certificate%5Borganization_name%5D=${options.organizationName || ''
     }&certificate%5Borganizational_unit%5D=${options.organizationalUnit || ''
     }&certificate%5Bcountry_name%5D=${options.country || ''
     }&certificate%5Bverification_type%5D=${options.type || ''}`);
 
-    if (createRQ.status === 302) return true;
+    if (createRQ.status === 302) return createRQ.location.split('/').pop();
     throw new Error(`Unknown error: ${createRQ.status}`);
   },
 };

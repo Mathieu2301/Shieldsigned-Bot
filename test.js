@@ -8,10 +8,9 @@ if (!fs.existsSync('./config.json')) {
   fs.writeFileSync('./config.json', `{
   "username": "xxxxxxx@example.com",
   "password": "xxxxxxx",
-  "domain": "*.example.com",
+  "domains": ["*.example.com"],
   "paths": {
     "crt": "./certificate.crt",
-    "pem": "./certificate.pem",
     "key": "./certificate.key"
   }
 }`);
@@ -30,31 +29,45 @@ try {
 if (!config
   || !config.username
   || !config.password
-  || !config.domain
+  || !config.domains
   || !config.paths
 ) {
   console.error('Wrong "./config.json" file');
   process.exit(1);
 }
 
-(async () => {
+const check = async () => {
   console.log('Login...');
-  await SSB.login(config.username, config.password);
-  // const firstExpired = certs.filter((c) => c.status === 'Expired')[0];
-  // console.log('Deleting:', firstExpired);
-  // console.log('Done !', await firstExpired.delete());
-  console.log('Creating cert...');
-  console.log('Done !', await SSB.createCert({
-    domain: 'example.com',
-    type: 'HTTP',
-  }));
+  const certs = (await SSB.login(config.username, config.password))
+    .filter((c) => config.domains.includes(c.domain));
 
-  setInterval(async () => {
-    console.log('Getting waiting certs...');
-    const firstWaiting = (await SSB.getCerts()).filter((c) => c.status === 'Created' || c.status === 'Initialized')[0];
-    if (!firstWaiting) return console.log('No waiting');
-    console.log('Deleting:', firstWaiting);
-    console.log('Done !', await firstWaiting.delete());
-    return true;
-  }, 5000);
-})();
+  console.log('Checking', certs.length, 'certificate(s)');
+
+  certs.forEach(async (cert) => {
+    if (cert.daysLeft === 0) {
+      console.log('Deleting:', cert);
+      console.log('Deleted !', await cert.delete());
+    }
+
+    if (cert.daysLeft < 10) {
+      console.log('Renew certificate:', cert);
+
+      cert.renew(({
+        organizationName: 'Iridium',
+        organizationalUnit: 'Iridium',
+        country: 'FR',
+      }), (keys) => {
+        console.log('Certificate for', cert.domain, 'renewed !');
+
+        if (config.paths.crt) fs.writeFileSync(config.paths.crt, keys.publicKey);
+        if (config.paths.key) fs.writeFileSync(config.paths.key, keys.privateKey);
+      }, (status) => {
+        // 'Created' > 'Started verification' > 'Generating' > 'Complete'
+        console.log('Progress:', status);
+      });
+    }
+  });
+};
+
+check();
+setInterval(check, 24 * 60 * 60 * 1000);

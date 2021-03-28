@@ -1,7 +1,7 @@
 {
-  "name": "shieldsigned-bot",
+  "name": "shieldsigned-api",
   "version": "1.0.0",
-  "description": "Auto SSL Bot",
+  "description": "Auto SSL API working with Shieldsigned.com",
   "main": "main.js",
   "scripts": {
     "start": "node test",
