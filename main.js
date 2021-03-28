@@ -1,134 +1,156 @@
 const https = require('https');
-const fs = require('fs');
 
-/* eslint-disable no-console */
+const activeSession = {
+  token: null,
+  session: null,
+};
 
-if (!fs.existsSync('./config.json')) {
-  console.log('No config found');
-  fs.writeFileSync('./config.json', `{
-  "username": "xxxxxxx@example.com",
-  "password": "xxxxxxx",
-  "domain": "*.example.com",
-  "paths": {
-    "crt": "./certificate.crt",
-    "pem": "./certificate.pem",
-    "key": "./certificate.key"
-  }
-}`);
-  console.log('Please complete "./config.json" file.');
-  process.exit(0);
-}
+function request(infos = {}, payload = '') {
+  return new Promise((cb, err) => {
+    const req = https.request(infos, (res) => {
+      let data = '';
+      res.on('data', (d) => { data += d; });
+      res.on('close', () => {
+        const token = data.match(/"csrf-token" content=".*"/gm);
+        const session = res.headers['set-cookie'];
 
-let config = {};
+        if (token) activeSession.token = token[0].replace(/"/g, '').split('=', 2).pop();
+        if (session && session.filter) {
+          activeSession.session = session
+            .filter((c) => c.includes('session'))[0]
+            .split(';')[0].split('=', 2).pop();
+        }
 
-try {
-  config = JSON.parse(fs.readFileSync('./config.json'));
-} catch (error) {
-  console.error('Can\'t parse "./config.json" file');
-}
-
-if (!config
-  || !config.username
-  || !config.password
-  || !config.domain
-  || !config.paths
-) {
-  console.error('Wrong "./config.json" file');
-  process.exit(1);
-}
-
-function getCerts(session = '') {
-  console.log('Getting tokens...');
-  const req = https.request({
-    method: 'GET',
-    hostname: 'www.shieldsigned.com',
-    path: '/certificates',
-    headers: {
-      Cookie: `_shield_signed_session=${session}`,
-    },
-  }, (res) => {
-    let data = '';
-    res.on('data', (d) => { data += d; });
-    res.on('close', () => {
-      const certs = data.split('<tbody>')[1].replace(/(\t| {2,})/g, '').match(/<tr>(\n|\r|.)+?<\/tr>/g).map((c) => {
-        const lines = c.split('\n').map((l) => l.replace(/<.*?>|<\/.*?>/g, ''));
-        return {
-          status: lines[1],
-          domain: lines[3],
-          creation: new Date(lines[4]),
-        };
+        cb({ data, status: res.statusCode });
       });
-      console.log('Certs:', certs);
     });
-  });
 
-  req.on('error', () => {
-    console.log('Can\'t reach shieldsigned.com server');
-    process.exit(1);
-  });
+    req.on('error', () => {
+      err(new Error('Can\'t reach shieldsigned.com server'));
+    });
 
-  req.end();
+    req.end(payload);
+  });
 }
 
-function login(token = '', session = '') {
-  console.log('Login...');
-  const req = https.request({
-    method: 'POST',
-    hostname: 'www.shieldsigned.com',
-    path: '/users/sign_in',
-    headers: {
-      'Content-Type': 'multipart/form-data',
-      Cookie: `_shield_signed_session=${session}`,
-    },
-  }, (res) => {
-    res.on('data', () => null);
-    res.on('close', () => {
-      if (res.statusCode !== 302) {
-        console.error('Wrong username or password');
-        process.exit(1);
-      }
-
-      const newSession = res.headers['set-cookie'][0].split(';')[0].split('=', 2).pop();
-      if (!newSession) {
-        console.error('Can\'t auth token, please make sure you have the latest version of this program');
-        console.error('Go to "https://github.com/Mathieu2301/Shieldsigned-Bot/issues" if you get any issue');
-        process.exit(1);
-      }
-
-      console.log('OK.');
-      getCerts(newSession);
+module.exports = {
+  async login(username = '', password = '') {
+    // Init session
+    const sessRQ = await request({
+      method: 'GET',
+      hostname: 'www.shieldsigned.com',
+      path: '/users/sign_in',
     });
-  });
 
-  req.on('error', () => {
-    console.log('Can\'t reach shieldsigned.com server');
-    process.exit(1);
-  });
-
-  req.end(`authenticity_token=${token.replace(/\+/g, '%2B').replace(/\//g, '%2F')
-  }==&user%5Bemail%5D=${config.username.replace(/@/g, '%40')
-  }&user%5Bpassword%5D=${config.password
-  }&user%5Bremember_me%5D=0&commit=Log+in`);
-}
-
-const req = https.get('https://www.shieldsigned.com/users/sign_in', (res) => {
-  let data = '';
-  res.on('data', (d) => { data += d; });
-  res.on('close', () => {
-    const token = data.match(/"csrf-token" content=".*"/gm)[0].replace(/"/g, '').split('=', 2).pop();
-    const session = res.headers['set-cookie'][0].split(';')[0].split('=', 2).pop();
-    if (!token || !session) {
-      console.error('Can\'t get auth token, please make sure you have the latest version of this program');
-      console.error('Go to "https://github.com/Mathieu2301/Shieldsigned-Bot/issues" if you get any issue');
-      process.exit(1);
+    if (sessRQ.status !== 200) {
+      throw new Error(`Can't get auth token, please make sure you have the latest version of this program.
+      Go to "https://github.com/Mathieu2301/Shieldsigned-Bot/issues" if you get any issue.`);
     }
-    login(token, session);
-  });
-});
 
-req.on('error', () => {
-  console.log('Can\'t reach shieldsigned.com server');
-  process.exit(1);
-});
+    // Login
+    const loginRQ = await request({
+      method: 'POST',
+      hostname: 'www.shieldsigned.com',
+      path: '/users/sign_in',
+      headers: {
+        'content-type': 'multipart/form-data',
+        cookie: `_shield_signed_session=${activeSession.session}`,
+      },
+    }, `authenticity_token=${activeSession.token.replace(/\+/g, '%2B').replace(/\//g, '%2F')
+    }==&user%5Bemail%5D=${username.replace(/@/g, '%40')
+    }&user%5Bpassword%5D=${password}&user%5Bremember_me%5D=0&commit=Log+in`);
 
-req.end();
+    if (loginRQ.status !== 302) throw new Error('Wrong username or password');
+
+    return this.getCerts();
+  },
+
+  async getCerts() {
+    if (!activeSession.session || !activeSession.token) throw new Error('Not logged');
+
+    const certsRQ = await request({
+      method: 'GET',
+      hostname: 'www.shieldsigned.com',
+      path: '/certificates',
+      headers: {
+        cookie: `_shield_signed_session=${activeSession.session}`,
+      },
+    });
+
+    const table = certsRQ.data.split('<tbody>')[1];
+    if (!table) return [];
+
+    return certsRQ.data.split('<tbody>')[1].replace(/(\t| {2,})/g, '').match(/<tr>(\n|\r|.)+?<\/tr>/g).map((c) => {
+      const lines = c.split('\n').map((l) => l.replace(/<.*?>|<\/.*?>/g, ''));
+
+      const id = c.match(/<a href="\/certificates\/[0-9]*?">View</g)[0].split('/').pop().split('"')[0];
+      const creation = new Date(lines[4]);
+      const expiration = new Date((new Date(lines[4])).setMonth(creation.getMonth() + 3));
+      const daysLeft = Math.floor((expiration.getTime() - Date.now()) / 86400000);
+
+      const { deleteCert } = this;
+
+      return {
+        id,
+        status: (daysLeft > 0 ? lines[1] : 'Expired'),
+        domain: lines[3],
+        creation,
+        expiration,
+        daysLeft: daysLeft > 0 ? daysLeft : 0,
+        async delete() {
+          return deleteCert(id);
+        },
+      };
+    });
+  },
+
+  async deleteCert(certId = '') {
+    if (!activeSession.session || !activeSession.token) throw new Error('Not logged');
+
+    const delRQ = await request({
+      method: 'POST',
+      hostname: 'www.shieldsigned.com',
+      path: `/certificates/${certId}`,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        cookie: `_shield_signed_session=${activeSession.session}`,
+      },
+    }, `_method=delete&authenticity_token=${activeSession.token.replace(/\+/g, '%2B').replace(/\//g, '%2F')}==`);
+
+    if (delRQ.status === 302) return true;
+    if (delRQ.status === 404) throw new Error('Certificate not found');
+    throw new Error(`Unknown error: ${delRQ.status}`);
+  },
+
+  async createCert(options = {
+    domain: '',
+    CSR: '',
+    organizationName: '',
+    organizationalUnit: '',
+    country: '',
+    type: 'HTTP',
+  }) {
+    if (!activeSession.session || !activeSession.token) throw new Error('Not logged');
+    if (!options.domain && !options.CSR) throw new Error('Please specify a domain or a CSR');
+    if (!['HTTP', 'DNS'].includes(options.type)) throw new Error('Verification type can only be HTTP or DNS');
+
+    const createRQ = await request({
+      method: 'POST',
+      hostname: 'www.shieldsigned.com',
+      path: '/certificates/',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        cookie: `_shield_signed_session=${activeSession.session}`,
+      },
+    }, `authenticity_token=${activeSession.token.replace(/\+/g, '%2B').replace(/\//g, '%2F')
+    }==&certificate%5Bidentifiers%5D=${options.domain || ''
+    }&certificate%5Bcsr%5D=${options.CSR || ''
+    }&certificate%5Borganization_name%5D=${options.organizationName || ''
+    }&certificate%5Borganizational_unit%5D=${options.organizationalUnit || ''
+    }&certificate%5Bcountry_name%5D=${options.country || ''
+    }&certificate%5Bverification_type%5D=${options.type || ''}`);
+
+    if (createRQ.status === 302) return true;
+    throw new Error(`Unknown error: ${createRQ.status}`);
+  },
+};

@@ -4,8 +4,8 @@
   "description": "Auto SSL Bot",
   "main": "main.js",
   "scripts": {
-    "start": "node main",
-    "test": "node main"
+    "start": "node test",
+    "test": "node test"
   },
   "repository": {
     "type": "git",
